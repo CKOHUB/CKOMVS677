@@ -1,1 +1,629 @@
+-- CKOHUB Combat (Delta)
+-- ESP | Hitbox | Silent Aim | Auto Shoot Agresivo | Kill All
+-- Creado por oli y chris | Discord: https://discord.gg/EXgfQ5Nux
 
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+while not player do
+	task.wait()
+	player = Players.LocalPlayer
+end
+
+local camera = Workspace.CurrentCamera
+local mouse = player:GetMouse()
+
+local env = (getgenv and getgenv()) or _G
+env.CKOHUBTargetPart = nil
+
+-- ========== STATE ==========
+local espEnabled = false
+local espColor = Color3.fromRGB(255, 60, 60)
+local customHighlights = {}
+
+local hitboxEnabled = false
+local hitboxSize = 12
+local hitboxSizeVector = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
+
+local silentAimEnabled = false
+local silentAimPart = "Head"
+
+local autoShootEnabled = false
+local autoShootAgresivo = false
+local autoShootRange = 250
+
+local killAllEnabled = false
+local teamCheckEnabled = true
+
+local lastHitboxUpdate = 0
+local lastEspUpdate = 0
+
+-- ========== HELPERS ==========
+local function isAlive(plr)
+	local char = plr and plr.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	return hum and hum.Health > 0
+end
+
+local function isEnemy(target)
+	if not target or target == player or not target:IsA("Player") then
+		return false
+	end
+	if not teamCheckEnabled then
+		return true
+	end
+	local myTeam = player:GetAttribute("Team") or player.Team
+	local targetTeam = target:GetAttribute("Team") or target.Team
+	if myTeam == nil or targetTeam == nil then
+		return true
+	end
+	return myTeam ~= targetTeam
+end
+
+local function estaEnLobby()
+	local mapa = player:GetAttribute("Map")
+	local partida = player:GetAttribute("Game")
+	return mapa == nil or partida == nil
+end
+
+local function destroyChild(parent, name)
+	if not parent then return end
+	local c = parent:FindFirstChild(name)
+	if c then pcall(function() c:Destroy() end) end
+end
+
+local function clearHitboxes(character)
+	if not character then return end
+	destroyChild(character, "GhostHitbox")
+end
+
+local function getTargetPart(character)
+	if not character then return nil end
+	if silentAimPart == "Head" then
+		return character:FindFirstChild("Head")
+	elseif silentAimPart == "Torso" then
+		return character:FindFirstChild("UpperTorso")
+			or character:FindFirstChild("Torso")
+			or character:FindFirstChild("HumanoidRootPart")
+	end
+	return character:FindFirstChild("HumanoidRootPart")
+		or character:FindFirstChild("UpperTorso")
+		or character:FindFirstChild("Torso")
+		or character:FindFirstChild("Head")
+end
+
+local function getClosestEnemy(maxDist)
+	local myChar = player.Character
+	local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+	if not myHRP then return nil, nil end
+
+	local closest, closestPart, shortest = nil, nil, maxDist or math.huge
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= player and isEnemy(plr) and isAlive(plr) then
+			local part = getTargetPart(plr.Character)
+			if part then
+				local d = (part.Position - myHRP.Position).Magnitude
+				if d < shortest then
+					shortest = d
+					closest = plr
+					closestPart = part
+				end
+			end
+		end
+	end
+	return closest, closestPart
+end
+
+local function getGun()
+	local char = player.Character
+	local backpack = player:FindFirstChild("Backpack")
+	local function isGun(tool)
+		if not tool or not tool:IsA("Tool") then return false end
+		if tool:FindFirstChild("Kill") or tool:FindFirstChild("ThrowKill") then return false end
+		return tool:FindFirstChild("Handle") ~= nil
+	end
+	if char then
+		local t = char:FindFirstChildOfClass("Tool")
+		if isGun(t) then return t end
+	end
+	if backpack then
+		for _, item in ipairs(backpack:GetChildren()) do
+			if isGun(item) then return item end
+		end
+	end
+	return nil
+end
+
+local function fireGun(tool)
+	if not tool then return end
+	pcall(function() tool:Activate() end)
+	pcall(function()
+		if mouse1click then mouse1click() end
+	end)
+	pcall(function()
+		local vu = game:GetService("VirtualUser")
+		vu:Button1Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
+		task.wait(0.015)
+		vu:Button1Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
+	end)
+end
+
+-- ========== SILENT AIM ==========
+pcall(function()
+	if not (hookmetamethod and checkcaller and getnamecallmethod) then return end
+	local oldNamecall
+	oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+		local method = getnamecallmethod()
+		local target = env.CKOHUBTargetPart
+		if not checkcaller() and target and target.Parent and (silentAimEnabled or autoShootEnabled or autoShootAgresivo) then
+			if method == "Raycast" and self == Workspace then
+				local origin, direction, params = ...
+				if typeof(direction) == "Vector3" and direction.Magnitude > 10 then
+					local newDir = (target.Position - origin).Unit * 9000
+					return oldNamecall(self, origin, newDir, params)
+				end
+			elseif string.find(tostring(method), "FindPartOnRay") and self == Workspace then
+				local ray, p2, p3, p4 = ...
+				if typeof(ray) == "Ray" and ray.Direction.Magnitude > 10 then
+					local newRay = Ray.new(ray.Origin, (target.Position - ray.Origin).Unit * 9000)
+					return oldNamecall(self, newRay, p2, p3, p4)
+				end
+			end
+		end
+		return oldNamecall(self, ...)
+	end)
+end)
+
+task.spawn(function()
+	while task.wait(0.05) do
+		if silentAimEnabled or autoShootEnabled or autoShootAgresivo then
+			local _, part = getClosestEnemy(autoShootRange)
+			env.CKOHUBTargetPart = part
+		else
+			env.CKOHUBTargetPart = nil
+		end
+	end
+end)
+
+-- ========== AUTO SHOOT ==========
+local autoShootConn
+local function stopAutoShoot()
+	if autoShootConn then
+		autoShootConn:Disconnect()
+		autoShootConn = nil
+	end
+end
+
+local function startAutoShoot()
+	stopAutoShoot()
+	autoShootConn = RunService.Heartbeat:Connect(function()
+		if not (autoShootEnabled or autoShootAgresivo) then return end
+		if estaEnLobby() then return end
+		local char = player.Character
+		if not char or not isAlive(player) then return end
+
+		local enemy, part = getClosestEnemy(autoShootRange)
+		if not enemy or not part then return end
+		env.CKOHUBTargetPart = part
+
+		local gun = getGun()
+		if not gun then return end
+
+		if gun.Parent == player:FindFirstChild("Backpack") then
+			pcall(function()
+				char:FindFirstChildOfClass("Humanoid"):EquipTool(gun)
+			end)
+			return
+		end
+
+		fireGun(gun)
+		if autoShootAgresivo then
+			pcall(function() gun:Activate() end)
+		end
+	end)
+end
+
+-- ========== KILL ALL ==========
+local killAllConn
+local function stopKillAll()
+	if killAllConn then
+		killAllConn:Disconnect()
+		killAllConn = nil
+	end
+end
+
+local function startKillAll()
+	stopKillAll()
+	killAllConn = RunService.Heartbeat:Connect(function()
+		if not killAllEnabled then return end
+		if estaEnLobby() then return end
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not hrp or not isAlive(player) then return end
+
+		local enemy, part = getClosestEnemy(400)
+		if not enemy or not part then return end
+
+		local offset = Vector3.new((math.random() - 0.5) * 4, 0, (math.random() - 0.5) * 4)
+		pcall(function()
+			hrp.CFrame = CFrame.new(part.Position + offset + Vector3.new(0, 2, 0))
+		end)
+
+		env.CKOHUBTargetPart = part
+		local gun = getGun()
+		if gun then
+			if gun.Parent == player:FindFirstChild("Backpack") then
+				pcall(function()
+					char:FindFirstChildOfClass("Humanoid"):EquipTool(gun)
+				end)
+			else
+				fireGun(gun)
+			end
+		end
+	end)
+end
+
+-- ========== HITBOX ==========
+RunService.Heartbeat:Connect(function()
+	if not hitboxEnabled then return end
+	local now = os.clock()
+	if now - lastHitboxUpdate < 0.06 then return end
+	lastHitboxUpdate = now
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= player and isEnemy(plr) and isAlive(plr) then
+			local character = plr.Character
+			local root = character and character:FindFirstChild("HumanoidRootPart")
+			if root then
+				local p = character:FindFirstChild("GhostHitbox")
+				if not p then
+					p = Instance.new("Part")
+					p.Name = "GhostHitbox"
+					p.Size = hitboxSizeVector
+					p.Transparency = 0.65
+					p.CanCollide = false
+					p.Massless = true
+					p.Material = Enum.Material.ForceField
+					p.Color = Color3.fromRGB(255, 80, 80)
+					p.CFrame = root.CFrame
+					p.Parent = character
+					local weld = Instance.new("WeldConstraint")
+					weld.Part0 = root
+					weld.Part1 = p
+					weld.Parent = p
+				else
+					p.Size = hitboxSizeVector
+				end
+			end
+		else
+			clearHitboxes(plr.Character)
+		end
+	end
+end)
+
+-- ========== ESP ==========
+local safeEspFolder = Instance.new("Folder")
+safeEspFolder.Name = "CKOHUB_ESP"
+pcall(function() safeEspFolder.Parent = CoreGui end)
+if safeEspFolder.Parent ~= CoreGui then
+	safeEspFolder.Parent = player:WaitForChild("PlayerGui")
+end
+
+RunService.Heartbeat:Connect(function()
+	local now = os.clock()
+	if now - lastEspUpdate < 0.12 then return end
+	lastEspUpdate = now
+
+	local inLobby = estaEnLobby()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= player and espEnabled and isAlive(plr) and isEnemy(plr) and not inLobby then
+			local character = plr.Character
+			if not customHighlights[plr] or not customHighlights[plr].Parent then
+				local ok, h = pcall(function()
+					local hl = Instance.new("Highlight")
+					hl.Name = "CKOHUB_HL"
+					hl.Adornee = character
+					hl.FillColor = espColor
+					hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+					hl.FillTransparency = 0.45
+					hl.OutlineTransparency = 0
+					hl.Parent = safeEspFolder
+					return hl
+				end)
+				if ok and h then customHighlights[plr] = h end
+			else
+				customHighlights[plr].Adornee = character
+				customHighlights[plr].FillColor = espColor
+			end
+		else
+			if customHighlights[plr] then
+				pcall(function() customHighlights[plr]:Destroy() end)
+				customHighlights[plr] = nil
+			end
+		end
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+	if customHighlights[plr] then
+		pcall(function() customHighlights[plr]:Destroy() end)
+		customHighlights[plr] = nil
+	end
+	clearHitboxes(plr.Character)
+end)
+
+-- ========== UI LOAD (Delta safe) ==========
+local function loadWindUI()
+	local urls = {
+		"https://github.com/Footagesus/WindUI/releases/download/1.6.66/main.lua",
+		"https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua",
+	}
+	for _, url in ipairs(urls) do
+		local ok, result = pcall(function()
+			return loadstring(game:HttpGet(url))()
+		end)
+		if ok and result then
+			return result
+		end
+	end
+	return nil
+end
+
+local WindUI = loadWindUI()
+local useFallback = WindUI == nil
+
+if not useFallback then
+	local okWin, Window = pcall(function()
+		return WindUI:CreateWindow({
+			Title = "CKOHUB",
+			Theme = "Dark",
+			Author = "oli y chris",
+			Folder = "CKOHUB/Combat",
+			Acrylic = false,
+			Transparent = false,
+			NewElements = true,
+			HideSearchBar = true,
+			OpenButton = {
+				Enabled = true,
+				Draggable = true,
+				Title = "CKOHUB",
+				CornerRadius = UDim.new(1),
+				Scale = 0.85,
+			},
+		})
+	end)
+
+	if not okWin or not Window then
+		useFallback = true
+	else
+		pcall(function() WindUI:SetTheme("Dark") end)
+
+		local InfoTab = Window:Tab({ Title = "Info", Icon = "info" })
+		InfoTab:Paragraph({
+			Title = "CKOHUB Combat",
+			Desc = "ESP Â· Hitbox Â· Silent Aim Â· Auto Shoot Â· Kill All\nDiscord: discord.gg/EXgfQ5Nux",
+		})
+
+		local EspTab = Window:Tab({ Title = "ESP", Icon = "eye" })
+		EspTab:Toggle({
+			Title = "Activar ESP",
+			Value = false,
+			Callback = function(v)
+				espEnabled = v
+				if not v then
+					for plr, h in pairs(customHighlights) do
+						pcall(function() h:Destroy() end)
+						customHighlights[plr] = nil
+					end
+				end
+			end,
+		})
+
+		local HitTab = Window:Tab({ Title = "Hitbox", Icon = "box" })
+		HitTab:Toggle({
+			Title = "Activar Hitbox",
+			Value = false,
+			Callback = function(v)
+				hitboxEnabled = v
+				if not v then
+					for _, plr in ipairs(Players:GetPlayers()) do
+						clearHitboxes(plr.Character)
+					end
+				end
+			end,
+		})
+		HitTab:Slider({
+			Title = "TamaÃ±o Hitbox",
+			Value = { Min = 2, Max = 25, Default = 12 },
+			Callback = function(v)
+				hitboxSize = v
+				hitboxSizeVector = Vector3.new(v, v, v)
+			end,
+		})
+
+		local CombatTab = Window:Tab({ Title = "Combat", Icon = "crosshair" })
+		CombatTab:Toggle({
+			Title = "Team Check",
+			Value = true,
+			Callback = function(v) teamCheckEnabled = v end,
+		})
+		CombatTab:Toggle({
+			Title = "Silent Aim",
+			Value = false,
+			Callback = function(v)
+				silentAimEnabled = v
+				if not v and not autoShootEnabled and not autoShootAgresivo then
+					env.CKOHUBTargetPart = nil
+				end
+			end,
+		})
+		CombatTab:Toggle({
+			Title = "Auto Shoot",
+			Value = false,
+			Callback = function(v)
+				autoShootEnabled = v
+				if v then startAutoShoot()
+				elseif not autoShootAgresivo then stopAutoShoot() end
+			end,
+		})
+		CombatTab:Toggle({
+			Title = "Auto Shoot Agresivo",
+			Value = false,
+			Callback = function(v)
+				autoShootAgresivo = v
+				if v then startAutoShoot()
+				elseif not autoShootEnabled then stopAutoShoot() end
+			end,
+		})
+		CombatTab:Slider({
+			Title = "Rango",
+			Value = { Min = 50, Max = 500, Default = 250 },
+			Callback = function(v) autoShootRange = v end,
+		})
+		CombatTab:Toggle({
+			Title = "Kill All (Beta)",
+			Value = false,
+			Callback = function(v)
+				killAllEnabled = v
+				if v then startKillAll() else stopKillAll() end
+			end,
+		})
+
+		pcall(function()
+			WindUI:Notify({
+				Title = "CKOHUB",
+				Content = "Abierto en Delta",
+				Duration = 3,
+			})
+		end)
+	end
+end
+
+-- Fallback UI si WindUI no carga (siempre abre en Delta)
+if useFallback then
+	local pg = player:WaitForChild("PlayerGui")
+	local old = pg:FindFirstChild("CKOHUB_CombatUI")
+	if old then old:Destroy() end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "CKOHUB_CombatUI"
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.Parent = pg
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Main"
+	frame.Size = UDim2.fromOffset(220, 340)
+	frame.Position = UDim2.new(0, 20, 0.5, -170)
+	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -10, 0, 32)
+	title.Position = UDim2.fromOffset(5, 6)
+	title.BackgroundTransparency = 1
+	title.Text = "CKOHUB Combat"
+	title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 16
+	title.Parent = frame
+
+	local list = Instance.new("UIListLayout")
+	list.Padding = UDim.new(0, 6)
+	list.Parent = frame
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 40)
+	pad.PaddingLeft = UDim.new(0, 10)
+	pad.PaddingRight = UDim.new(0, 10)
+	pad.Parent = frame
+
+	local function makeToggle(name, default, callback)
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(1, 0, 0, 32)
+		btn.BackgroundColor3 = default and Color3.fromRGB(30, 120, 70) or Color3.fromRGB(40, 40, 48)
+		btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		btn.Font = Enum.Font.Gotham
+		btn.TextSize = 13
+		btn.Text = name .. (default and "  [ON]" or "  [OFF]")
+		btn.Parent = frame
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+		local state = default
+		btn.MouseButton1Click:Connect(function()
+			state = not state
+			btn.Text = name .. (state and "  [ON]" or "  [OFF]")
+			btn.BackgroundColor3 = state and Color3.fromRGB(30, 120, 70) or Color3.fromRGB(40, 40, 48)
+			callback(state)
+		end)
+		return btn
+	end
+
+	makeToggle("ESP", false, function(v)
+		espEnabled = v
+		if not v then
+			for plr, h in pairs(customHighlights) do
+				pcall(function() h:Destroy() end)
+				customHighlights[plr] = nil
+			end
+		end
+	end)
+	makeToggle("Hitbox", false, function(v)
+		hitboxEnabled = v
+		if not v then
+			for _, plr in ipairs(Players:GetPlayers()) do
+				clearHitboxes(plr.Character)
+			end
+		end
+	end)
+	makeToggle("Team Check", true, function(v) teamCheckEnabled = v end)
+	makeToggle("Silent Aim", false, function(v)
+		silentAimEnabled = v
+		if not v and not autoShootEnabled and not autoShootAgresivo then
+			env.CKOHUBTargetPart = nil
+		end
+	end)
+	makeToggle("Auto Shoot", false, function(v)
+		autoShootEnabled = v
+		if v then startAutoShoot()
+		elseif not autoShootAgresivo then stopAutoShoot() end
+	end)
+	makeToggle("Auto Shoot Agresivo", false, function(v)
+		autoShootAgresivo = v
+		if v then startAutoShoot()
+		elseif not autoShootEnabled then stopAutoShoot() end
+	end)
+	makeToggle("Kill All (Beta)", false, function(v)
+		killAllEnabled = v
+		if v then startKillAll() else stopKillAll() end
+	end)
+
+	-- drag
+	local dragging, startPos, startInput
+	title.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			startInput = input.Position
+			startPos = frame.Position
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - startInput
+			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
+end
+
+print("[CKOHUB] Cargado - Delta OK")
